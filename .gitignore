@@ -16,7 +16,8 @@ $RECYCLE.BIN/
 # File tạm của trình soạn thảo
 *~
 *.swp
-.vscode/
+.vscode/*
+!.vscode/extensions.json
 .idea/
 
 # File tạm của Word khi đang mở tài liệu
@@ -28,3 +29,10 @@ $RECYCLE.BIN/
 danh_sach_dang_ky*
 *dang_ky*.xlsx
 *dang_ky*.csv
+
+# PlatformIO build outputs and downloaded project libraries
+.pio/
+
+# Generated ESP-IDF configuration (defaults are tracked)
+sdkconfig.esp32_fc
+sdkconfig.esp32_fc.old

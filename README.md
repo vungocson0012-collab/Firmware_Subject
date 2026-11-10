@@ -1,5 +1,9 @@
 # Mạch bay ESP32 — Kỹ Thuật UAV
 
+Bản sửa ngày 08/11/2026: xử lý lỗi RC/SBUS, cảm biến, chuyển mode và disarm.
+Xem [FIRMWARE_FIXES.md](FIRMWARE_FIXES.md) để biết thay đổi và giới hạn kiểm thử.
+Chạy `python3 tests/run_host_tests.py` để kiểm thử logic trên host.
+
 Mã nguồn mở của một bộ điều khiển bay (flight controller) cho drone bốn cánh,
 chạy trên ESP32. Kèm tài liệu hướng dẫn từ lúc cài phần mềm tới lúc bay thử.
 
@@ -37,44 +41,94 @@ Nhân 1 chỉ chạy vòng điều khiển, không chia sẻ với việc gì kh
 
 ---
 
-## Bắt đầu từ đâu
+## Build trong VSCode
 
-Đọc **[Tài liệu kèm theo/HUONG_DAN_CAI_DAT.md](Tài%20liệu%20kèm%20theo/HUONG_DAN_CAI_DAT.md)**.
+Firmware dùng **C++ (`.cpp` / `.h`)**, **ESP-IDF thuần** và FreeRTOS.
+Mỗi file `.cpp` được biên dịch riêng; các hàm và dữ liệu dùng chung có khai báo
+trong `include/`. Không còn phụ thuộc bước ghép sketch / tự sinh prototype của Arduino IDE.
 
-Tóm tắt cho người đã quen Arduino:
+1. Cài extension **PlatformIO IDE** (`platformio.platformio-ide`) trong VSCode.
+2. Chọn **File → Open Folder**, mở thư mục `Fw_Subject` có `platformio.ini`.
+3. PlatformIO dùng các gói đã cài nếu khớp phiên bản trong `platformio.ini`.
+4. Vào **PlatformIO → Project Tasks → esp32_fc → General → Build**.
+5. Khi cần nạp mạch, dùng **Upload**; mở **Monitor** để xem Serial ở 500000 baud.
 
-1. Arduino IDE 2.x
-2. Board Manager URL: `https://espressif.github.io/arduino-esp32/package_esp32_index.json`
-3. Cài gói **esp32 phiên bản 2.0.17** — **không phải bản mới nhất**
-4. Cài thư viện `BasicLinearAlgebra`
-5. Board: **ESP32-WROOM-DA Module**
-6. Mở `CODE_FC/KyThuatUAV_FC_level_1/KyThuatUAV_FC_level_1.ino`
+Hoặc chạy trong **PlatformIO Core CLI** terminal:
 
-> ⚠️ **Phải đúng core 2.0.17.** Từ bản 3.x, Espressif đổi hoàn toàn cách gọi hàm
-> xuất xung PWM, cài nhầm là biên dịch báo `'ledcSetup' was not declared in this scope`.
+```sh
+pio run -e esp32_fc
+pio run -e esp32_fc -t upload
+pio device monitor -b 500000
+```
 
-Toàn bộ thiết lập — chân cắm, kênh điều khiển, hệ số PID, bù gia tốc kế — nằm
-gọn trong **một khối duy nhất** ở đầu file `.ino` chính.
+Kết quả build nằm ở `.pio/build/esp32_fc/firmware.bin`.
+Khi dùng **Upload** hoặc `pio run -e esp32_fc -t upload`, PlatformIO nạp cả
+bootloader, bảng phân vùng và firmware vào đúng địa chỉ. Nếu có nhiều mạch,
+thêm `--upload-port <cổng USB>` vào lệnh upload.
+`platformio.ini` ghim platform `espressif32@6.9.0` với framework `espidf`
+(ESP-IDF 5.3.1). Không dùng Arduino core hoặc BasicLinearAlgebra.
+Điểm khởi động là `extern "C" void app_main()` trong `src/main.cpp`.
+SPI, I2C, UART SBUS và PWM ESC dùng driver ESP-IDF; Kalman 2 trạng thái dùng
+các phương trình ma trận khai triển trực tiếp.
+
+Board `esp32dev`, flash **4 MB QIO 80 MHz**, CPU **240 MHz** dành cho
+ESP32-WROOM-DA. Chân SPI được khai báo rõ trong `include/config.h`:
+SCLK 18, MISO 19, MOSI 23, CS 5.
+`sdkconfig.defaults` đặt FreeRTOS tick **1000 Hz** để giữ chu kỳ task 2 ms,
+và UART console **500000 baud**. Sau khi đổi các giá trị mặc định này, xóa
+`sdkconfig.esp32_fc` đã sinh rồi build lại để áp dụng.
+
+Cấu trúc CMake và cấu hình framework theo
+[tài liệu ESP-IDF của PlatformIO](https://docs.platformio.org/en/latest/frameworks/espidf.html).
+
+Chân cắm, kênh điều khiển, hệ số PID, bù gia tốc và tùy chọn debug nằm trong
+**[`include/config.h`](include/config.h)**.
+Hướng dẫn chi tiết: **[Tài liệu kèm theo/HUONG_DAN_CAI_DAT.md](Tài%20liệu%20kèm%20theo/HUONG_DAN_CAI_DAT.md)**.
 
 ---
 
 ## Cấu trúc thư mục
 
+```text
+Fw_Subject/
+├── platformio.ini              platform, board, ESP-IDF, console
+├── CMakeLists.txt              cấu hình project ESP-IDF
+├── sdkconfig.defaults          FreeRTOS tick, CPU, flash, console
+├── include/
+│   ├── config.h                chân cắm, PID, giới hạn, debug, chu kỳ task
+│   ├── types.h                 kiểu dữ liệu dùng chung
+│   ├── tasks.h                 khai báo các task FreeRTOS
+│   ├── shared_state.h          khai báo extern và mutex
+│   └── *.h                     API của các module cảm biến / điều khiển
+├── src/
+│   ├── CMakeLists.txt          đăng ký source và component ESP-IDF
+│   ├── main.cpp                app_main, rc_task, baro_task, debug
+│   ├── shared_state.cpp        định nghĩa dữ liệu dùng chung
+│   ├── control_task.cpp        vòng điều khiển, chế độ bay, mixer
+│   ├── imu_icm20602.cpp         driver IMU, ước lượng góc, hiệu chỉnh
+│   ├── baro_bmp388.cpp          driver áp suất qua I2C
+│   ├── altitude_kf.cpp         Kalman độ cao và tốc độ lên xuống
+│   ├── pid.cpp                 PID xếp tầng
+│   ├── rc_sbus.cpp             giải mã SBUS
+│   └── esc_output.cpp          xuất PWM cho 4 ESC
+├── CODE_FC/                    tài liệu Word của bản sketch cũ
+├── Tài liệu kèm theo/          hướng dẫn, sơ đồ lắp, danh sách linh kiện
+└── driver esp32/               driver USB CP210x cho Windows
 ```
-CODE_FC/KyThuatUAV_FC_level_1/   firmware
-├── KyThuatUAV_FC_level_1.ino    khối cấu hình + setup + các tác vụ RTOS
-├── control_task.ino             vòng điều khiển chính, các chế độ bay
-├── imu_icm20602.ino             driver IMU + ước lượng góc + hiệu chỉnh
-├── baro_bmp388.ino              driver áp suất, viết bằng thanh ghi
-├── altitude_kf.ino              Kalman 2 trạng thái cho độ cao
-├── pid.ino                      PID xếp tầng
-├── rc_sbus.ino                  giải mã SBUS
-├── esc_output.ino               xuất xung 4 ESC
-└── types.h                      kiểu dữ liệu dùng chung
 
-Tài liệu kèm theo/               hướng dẫn cài đặt, sơ đồ lắp, danh sách linh kiện
-driver esp32/                    driver USB CP210x cho Windows
+Các file `.ino` cũ đã chuyển sang C++ trong `src/` và `include/`; firmware dùng
+ESP-IDF thuần cho toàn bộ lớp truy cập phần cứng và khởi động.
+Các tài liệu Word cũ được giữ để tham khảo, đường dẫn sketch trong đó là đường dẫn trước khi chuyển đổi.
+
+Kiểm tra bộ lọc Kalman trên máy tính, không cần thư viện ngoài:
+
+```sh
+c++ -std=c++17 -Iinclude src/altitude_kf.cpp tests/altitude_kf_test.cpp -o /tmp/fc_kf_test
+/tmp/fc_kf_test
 ```
+
+Test đối chiếu 480000 lần cập nhật với mô hình ma trận, gồm trạng thái tĩnh,
+bước độ cao, chuyển động sin và gia tốc có bias.
 
 ---
 
@@ -94,6 +148,9 @@ Firmware biên dịch được **không có nghĩa là bay được**. Trước 
 ## Đã bay nghiệm thu
 
 Bộ hệ số PID mặc định trong code đã bay thật trên cấu hình:
+
+Thông tin nghiệm thu này thuộc bản firmware gốc. Bản chuyển sang ESP-IDF
+cần được kiểm thử lại trên phần cứng.
 
 | | |
 |---|---|
